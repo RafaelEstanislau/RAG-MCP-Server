@@ -1,0 +1,32 @@
+# Environment
+.env
+
+# Downloaded papers and vector store (local artifacts)
+data/downloads/
+data/chroma/
+data/sync_state.json
+
+# OAuth credentials and tokens
+credentials/client_secret.json
+credentials/token.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Test artifacts
+.coverage
+htmlcov/
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
