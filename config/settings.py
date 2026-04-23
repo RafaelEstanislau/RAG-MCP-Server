@@ -23,7 +23,7 @@ class Settings:
         default_factory=lambda: int(os.getenv("CHUNK_OVERLAP_PARAGRAPHS", "1"))
     )
     mcp_host: str = field(default_factory=lambda: os.getenv("MCP_HOST", "0.0.0.0"))
-    mcp_port: int = field(default_factory=lambda: int(os.getenv("MCP_PORT", "8000")))
+    mcp_port: int = field(default_factory=lambda: int(os.getenv("MCP_PORT", os.getenv("PORT", "8000"))))
     mcp_server_url: str = field(default_factory=lambda: os.getenv("MCP_SERVER_URL", "http://localhost:8000"))
 
 
