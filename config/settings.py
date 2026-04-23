@@ -17,7 +17,7 @@ class Settings:
     google_service_account_key: str = field(
         default_factory=lambda: os.getenv("GOOGLE_SERVICE_ACCOUNT_KEY", "")
     )
-    embed_model: str = field(default_factory=lambda: os.getenv("EMBED_MODEL", "all-MiniLM-L6-v2"))
+    embed_model: str = field(default_factory=lambda: os.getenv("EMBED_MODEL", "BAAI/bge-small-en-v1.5"))
     chunk_max_tokens: int = field(default_factory=lambda: int(os.getenv("CHUNK_MAX_TOKENS", "400")))
     chunk_overlap_paragraphs: int = field(
         default_factory=lambda: int(os.getenv("CHUNK_OVERLAP_PARAGRAPHS", "1"))

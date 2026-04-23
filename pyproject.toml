@@ -14,7 +14,7 @@ dependencies = [
     "pymupdf",
     "python-docx",
     "qdrant-client>=1.7",
-    "sentence-transformers",
+    "fastembed>=0.3",
     "python-dotenv",
 ]
 

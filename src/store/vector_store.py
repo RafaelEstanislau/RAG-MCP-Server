@@ -11,7 +11,7 @@ from qdrant_client.models import (
     PointStruct,
     VectorParams,
 )
-from sentence_transformers import SentenceTransformer
+from fastembed import TextEmbedding
 
 from config.settings import settings
 
@@ -20,7 +20,7 @@ COLLECTION_NAME = "references"
 VECTOR_SIZE = 384
 
 _client: QdrantClient | None = None
-_model: SentenceTransformer | None = None
+_model: TextEmbedding | None = None
 
 
 def _chunk_id_to_uuid(chunk_id: str) -> str:
@@ -58,10 +58,10 @@ def _get_embedder(
     if embedder is not None:
         return embedder
     if _model is None:
-        _model = SentenceTransformer(settings.embed_model)
+        _model = TextEmbedding(settings.embed_model)
 
     def _encode(texts: list[str]) -> list[list[float]]:
-        return _model.encode(texts, convert_to_numpy=True).tolist()
+        return [emb.tolist() for emb in _model.embed(texts)]
 
     return _encode
 
