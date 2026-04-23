@@ -1,7 +1,10 @@
 import contextlib
 import json
+import logging
 
 import uvicorn
+
+logger = logging.getLogger(__name__)
 from mcp.server import Server
 from mcp.server.auth.middleware.bearer_auth import BearerAuthBackend, RequireAuthMiddleware
 from mcp.server.auth.provider import ProviderTokenVerifier
@@ -66,21 +69,26 @@ async def list_tools() -> list[Tool]:
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-    if name == "search_references":
-        query = arguments.get("query", "")
-        top_k = int(arguments.get("top_k", 5))
-        results = query_chunks(query=query, top_k=top_k)
-        return [TextContent(type="text", text=json.dumps(results, ensure_ascii=False, indent=2))]
+    try:
+        if name == "search_references":
+            query = arguments.get("query", "")
+            top_k = int(arguments.get("top_k", 5))
+            results = query_chunks(query=query, top_k=top_k)
+            return [TextContent(type="text", text=json.dumps(results, ensure_ascii=False, indent=2))]
 
-    if name == "list_papers":
-        papers = list_papers()
-        return [TextContent(type="text", text=json.dumps(papers, ensure_ascii=False, indent=2))]
+        if name == "list_papers":
+            papers = list_papers()
+            return [TextContent(type="text", text=json.dumps(papers, ensure_ascii=False, indent=2))]
 
-    if name == "sync_drive":
-        summary = sync_drive()
-        return [TextContent(type="text", text=json.dumps(summary, ensure_ascii=False, indent=2))]
+        if name == "sync_drive":
+            summary = sync_drive()
+            return [TextContent(type="text", text=json.dumps(summary, ensure_ascii=False, indent=2))]
 
-    return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
+        return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
+
+    except Exception as exc:
+        logger.exception("Tool %s failed", name)
+        return [TextContent(type="text", text=json.dumps({"error": str(exc)}))]
 
 
 def build_starlette_app(server_url: str) -> Starlette:

@@ -11,10 +11,9 @@ dependencies = [
     "starlette",
     "uvicorn[standard]",
     "google-api-python-client",
-    "google-auth-oauthlib",
     "pymupdf",
     "python-docx",
-    "chromadb",
+    "qdrant-client>=1.7",
     "sentence-transformers",
     "python-dotenv",
 ]

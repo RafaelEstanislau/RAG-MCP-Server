@@ -12,11 +12,11 @@ BASE_DIR = Path(__file__).parent.parent
 @dataclass
 class Settings:
     drive_folder_id: str = field(default_factory=lambda: os.getenv("DRIVE_FOLDER_ID", ""))
-    chroma_path: Path = field(default_factory=lambda: BASE_DIR / "data" / "chroma")
-    downloads_path: Path = field(default_factory=lambda: BASE_DIR / "data" / "downloads")
-    sync_state_path: Path = field(default_factory=lambda: BASE_DIR / "data" / "sync_state.json")
-    client_secret_path: Path = field(default_factory=lambda: BASE_DIR / "credentials" / "client_secret.json")
-    token_path: Path = field(default_factory=lambda: BASE_DIR / "credentials" / "token.json")
+    qdrant_url: str = field(default_factory=lambda: os.getenv("QDRANT_URL", ""))
+    qdrant_api_key: str = field(default_factory=lambda: os.getenv("QDRANT_API_KEY", ""))
+    google_service_account_key: str = field(
+        default_factory=lambda: os.getenv("GOOGLE_SERVICE_ACCOUNT_KEY", "")
+    )
     embed_model: str = field(default_factory=lambda: os.getenv("EMBED_MODEL", "all-MiniLM-L6-v2"))
     chunk_max_tokens: int = field(default_factory=lambda: int(os.getenv("CHUNK_MAX_TOKENS", "400")))
     chunk_overlap_paragraphs: int = field(

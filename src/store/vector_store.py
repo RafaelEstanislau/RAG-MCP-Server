@@ -1,43 +1,62 @@
-from typing import Any, Callable
+import uuid
+from typing import Callable
 
-import chromadb
-from chromadb import Collection
+from qdrant_client import QdrantClient
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    FilterSelector,
+    MatchValue,
+    PointStruct,
+    VectorParams,
+)
 from sentence_transformers import SentenceTransformer
 
 from config.settings import settings
 
 
-_client: chromadb.PersistentClient | None = None
-_collection: Collection | None = None
+COLLECTION_NAME = "references"
+VECTOR_SIZE = 384
+
+_client: QdrantClient | None = None
 _model: SentenceTransformer | None = None
 
 
-def _get_collection(
-    client: chromadb.ClientAPI | None = None,
-    embedder: Callable[[list[str]], list[list[float]]] | None = None,
-) -> Collection:
-    """Return (or lazily create) the ChromaDB collection."""
-    global _client, _collection, _model
+def _chunk_id_to_uuid(chunk_id: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_DNS, chunk_id))
 
+
+def _get_client(client: QdrantClient | None = None) -> QdrantClient:
+    global _client
     if client is not None:
-        # Injected client (used in tests)
-        return client.get_or_create_collection("references")
+        return client
+    if _client is None:
+        _client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
+        _ensure_collection(_client)
+    return _client
 
-    if _collection is None:
-        _client = chromadb.PersistentClient(path=str(settings.chroma_path))
-        _collection = _client.get_or_create_collection("references")
 
-    return _collection
+def _ensure_collection(client: QdrantClient) -> None:
+    existing = {c.name for c in client.get_collections().collections}
+    if COLLECTION_NAME not in existing:
+        client.create_collection(
+            COLLECTION_NAME,
+            vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
+        )
+    client.create_payload_index(
+        collection_name=COLLECTION_NAME,
+        field_name="file_id",
+        field_schema="keyword",
+    )
 
 
 def _get_embedder(
     embedder: Callable[[list[str]], list[list[float]]] | None = None,
 ) -> Callable[[list[str]], list[list[float]]]:
     global _model
-
     if embedder is not None:
         return embedder
-
     if _model is None:
         _model = SentenceTransformer(settings.embed_model)
 
@@ -49,89 +68,127 @@ def _get_embedder(
 
 def upsert_chunks(
     chunks: list[dict],
-    client: chromadb.ClientAPI | None = None,
+    client: QdrantClient | None = None,
     embedder: Callable[[list[str]], list[list[float]]] | None = None,
 ) -> list[str]:
     """Embed and upsert chunks into the collection. Returns list of inserted chunk IDs."""
     if not chunks:
         return []
 
-    collection = _get_collection(client)
+    qdrant = _get_client(client)
     encode = _get_embedder(embedder)
 
     texts = [c["text"] for c in chunks]
-    ids = [c["chunk_id"] for c in chunks]
-    metadatas = [
-        {
-            "file_id": c["file_id"],
-            "file_name": c["file_name"],
-            "page_number": c["page_number"],
-            "chunk_index": c["chunk_index"],
-        }
-        for c in chunks
-    ]
     embeddings = encode(texts)
 
-    collection.upsert(ids=ids, embeddings=embeddings, documents=texts, metadatas=metadatas)
-    return ids
+    points = [
+        PointStruct(
+            id=_chunk_id_to_uuid(c["chunk_id"]),
+            vector=embeddings[i],
+            payload={
+                "chunk_id": c["chunk_id"],
+                "file_id": c["file_id"],
+                "file_name": c["file_name"],
+                "page_number": c["page_number"],
+                "chunk_index": c["chunk_index"],
+                "modified_time": c.get("modified_time", ""),
+                "text": c["text"],
+            },
+        )
+        for i, c in enumerate(chunks)
+    ]
+
+    qdrant.upsert(collection_name=COLLECTION_NAME, points=points)
+    return [c["chunk_id"] for c in chunks]
 
 
 def query_chunks(
     query: str,
     top_k: int = 5,
-    client: chromadb.ClientAPI | None = None,
+    client: QdrantClient | None = None,
     embedder: Callable[[list[str]], list[list[float]]] | None = None,
 ) -> list[dict]:
     """Semantic search. Returns list of {chunk_id, file_name, page_number, text, score} dicts."""
-    collection = _get_collection(client)
+    qdrant = _get_client(client)
     encode = _get_embedder(embedder)
 
     query_embedding = encode([query])[0]
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=min(top_k, collection.count() or 1),
-        include=["documents", "metadatas", "distances"],
+    response = qdrant.query_points(
+        collection_name=COLLECTION_NAME,
+        query=query_embedding,
+        limit=top_k,
     )
 
-    output = []
-    for i, doc_id in enumerate(results["ids"][0]):
-        meta = results["metadatas"][0][i]
-        distance = results["distances"][0][i]
-        output.append(
-            {
-                "chunk_id": doc_id,
-                "file_name": meta["file_name"],
-                "page_number": meta["page_number"],
-                "text": results["documents"][0][i],
-                "score": round(1 - distance, 4),  # cosine similarity approximation
-            }
-        )
-    return output
+    return [
+        {
+            "chunk_id": r.payload["chunk_id"],
+            "file_name": r.payload["file_name"],
+            "page_number": r.payload["page_number"],
+            "text": r.payload["text"],
+            "score": round(r.score, 4),
+        }
+        for r in response.points
+    ]
 
 
 def delete_by_file_id(
     file_id: str,
-    client: chromadb.ClientAPI | None = None,
+    client: QdrantClient | None = None,
 ) -> None:
     """Delete all chunks belonging to a given file_id."""
-    collection = _get_collection(client)
-    results = collection.get(where={"file_id": file_id}, include=[])
-    if results["ids"]:
-        collection.delete(ids=results["ids"])
+    qdrant = _get_client(client)
+    qdrant.delete(
+        collection_name=COLLECTION_NAME,
+        points_selector=FilterSelector(
+            filter=Filter(
+                must=[FieldCondition(key="file_id", match=MatchValue(value=file_id))]
+            )
+        ),
+    )
 
 
 def list_papers(
-    client: chromadb.ClientAPI | None = None,
+    client: QdrantClient | None = None,
 ) -> list[dict]:
     """Return unique paper metadata (file_id, file_name, chunk count)."""
-    collection = _get_collection(client)
-    all_items = collection.get(include=["metadatas"])
+    qdrant = _get_client(client)
+    points, _ = qdrant.scroll(
+        collection_name=COLLECTION_NAME,
+        limit=10000,
+        with_payload=True,
+        with_vectors=False,
+    )
 
     seen: dict[str, dict] = {}
-    for meta in all_items["metadatas"]:
-        fid = meta["file_id"]
+    for point in points:
+        fid = point.payload["file_id"]
         if fid not in seen:
-            seen[fid] = {"file_id": fid, "file_name": meta["file_name"], "chunk_count": 0}
+            seen[fid] = {
+                "file_id": fid,
+                "file_name": point.payload["file_name"],
+                "chunk_count": 0,
+            }
         seen[fid]["chunk_count"] += 1
 
     return list(seen.values())
+
+
+def list_indexed_files(
+    client: QdrantClient | None = None,
+) -> dict[str, str]:
+    """Return {file_id: modified_time} for all indexed files."""
+    qdrant = _get_client(client)
+    points, _ = qdrant.scroll(
+        collection_name=COLLECTION_NAME,
+        limit=10000,
+        with_payload=True,
+        with_vectors=False,
+    )
+
+    result: dict[str, str] = {}
+    for point in points:
+        fid = point.payload["file_id"]
+        if fid not in result:
+            result[fid] = point.payload.get("modified_time", "")
+
+    return result

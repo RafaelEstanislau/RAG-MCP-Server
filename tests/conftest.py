@@ -1,8 +1,9 @@
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import chromadb
 import pytest
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, VectorParams
 
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -11,14 +12,24 @@ SAMPLE_DOCX = FIXTURES_DIR / "sample.docx"
 
 
 @pytest.fixture
-def ephemeral_chroma() -> chromadb.EphemeralClient:
-    """Real in-memory ChromaDB client — no disk I/O, isolated per test."""
-    return chromadb.EphemeralClient()
+def qdrant_client() -> QdrantClient:
+    """Real in-memory Qdrant client — no disk I/O, isolated per test."""
+    client = QdrantClient(":memory:")
+    client.create_collection(
+        "references",
+        vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+    )
+    client.create_payload_index(
+        collection_name="references",
+        field_name="file_id",
+        field_schema="keyword",
+    )
+    return client
 
 
 @pytest.fixture
 def mock_embedder():
-    """Deterministic fake embedder — returns 384-dim zero vectors without loading any model."""
+    """Deterministic fake embedder — returns 384-dim vectors without loading any model."""
     def _embed(texts: list[str]) -> list[list[float]]:
         return [[0.1] * 384 for _ in texts]
     return _embed
@@ -27,8 +38,7 @@ def mock_embedder():
 @pytest.fixture
 def mock_drive_service():
     """MagicMock mimicking the Google Drive API service object."""
-    service = MagicMock()
-    return service
+    return MagicMock()
 
 
 @pytest.fixture

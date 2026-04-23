@@ -1,3 +1,5 @@
+import io
+
 from tests.conftest import SAMPLE_PDF, SAMPLE_DOCX
 from src.ingestion.extractor import extract_text_pdf, extract_text_docx
 
@@ -5,7 +7,7 @@ from src.ingestion.extractor import extract_text_pdf, extract_text_docx
 class TestExtractTextPdf:
     def test_returns_list_of_page_dicts(self):
         # Act
-        pages = extract_text_pdf(SAMPLE_PDF)
+        pages = extract_text_pdf(SAMPLE_PDF.read_bytes())
 
         # Assert
         assert isinstance(pages, list)
@@ -18,7 +20,7 @@ class TestExtractTextPdf:
 
     def test_page_numbers_are_positive(self):
         # Act
-        pages = extract_text_pdf(SAMPLE_PDF)
+        pages = extract_text_pdf(SAMPLE_PDF.read_bytes())
 
         # Assert
         for page in pages:
@@ -26,7 +28,7 @@ class TestExtractTextPdf:
 
     def test_no_empty_text_pages(self):
         # Act
-        pages = extract_text_pdf(SAMPLE_PDF)
+        pages = extract_text_pdf(SAMPLE_PDF.read_bytes())
 
         # Assert
         for page in pages:
@@ -34,7 +36,7 @@ class TestExtractTextPdf:
 
     def test_extracts_expected_content(self):
         # Act
-        pages = extract_text_pdf(SAMPLE_PDF)
+        pages = extract_text_pdf(SAMPLE_PDF.read_bytes())
         all_text = " ".join(p["text"] for p in pages).lower()
 
         # Assert
@@ -45,7 +47,7 @@ class TestExtractTextPdf:
 class TestExtractTextDocx:
     def test_returns_list_with_single_entry(self):
         # Act
-        pages = extract_text_docx(SAMPLE_DOCX)
+        pages = extract_text_docx(SAMPLE_DOCX.read_bytes())
 
         # Assert
         assert isinstance(pages, list)
@@ -53,35 +55,35 @@ class TestExtractTextDocx:
 
     def test_page_number_is_zero(self):
         # Act
-        pages = extract_text_docx(SAMPLE_DOCX)
+        pages = extract_text_docx(SAMPLE_DOCX.read_bytes())
 
         # Assert
         assert pages[0]["page_number"] == 0
 
     def test_text_is_non_empty(self):
         # Act
-        pages = extract_text_docx(SAMPLE_DOCX)
+        pages = extract_text_docx(SAMPLE_DOCX.read_bytes())
 
         # Assert
         assert pages[0]["text"].strip() != ""
 
     def test_extracts_paragraph_content(self):
         # Act
-        pages = extract_text_docx(SAMPLE_DOCX)
+        pages = extract_text_docx(SAMPLE_DOCX.read_bytes())
         text = pages[0]["text"].lower()
 
         # Assert
         assert "introduction" in text
         assert "paragraph" in text
 
-    def test_returns_empty_list_for_empty_docx(self, tmp_path):
+    def test_returns_empty_list_for_empty_docx(self):
         # Arrange
         from docx import Document
-        empty_path = tmp_path / "empty.docx"
-        Document().save(str(empty_path))
+        buf = io.BytesIO()
+        Document().save(buf)
 
         # Act
-        pages = extract_text_docx(empty_path)
+        pages = extract_text_docx(buf.getvalue())
 
         # Assert
         assert pages == []

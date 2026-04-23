@@ -1,13 +1,13 @@
-from pathlib import Path
+import io
 
 import fitz  # PyMuPDF
 from docx import Document
 
 
-def extract_text_pdf(path: Path) -> list[dict]:
-    """Extract per-page text from a PDF. Returns list of {page_number, text} dicts."""
+def extract_text_pdf(data: bytes) -> list[dict]:
+    """Extract per-page text from PDF bytes. Returns list of {page_number, text} dicts."""
     pages = []
-    with fitz.open(str(path)) as doc:
+    with fitz.open(stream=data, filetype="pdf") as doc:
         for page_num, page in enumerate(doc, start=1):
             text = page.get_text().strip()
             if text:
@@ -15,9 +15,9 @@ def extract_text_pdf(path: Path) -> list[dict]:
     return pages
 
 
-def extract_text_docx(path: Path) -> list[dict]:
-    """Extract text from a DOCX file. Returns a single-element list (no page tracking in DOCX)."""
-    doc = Document(str(path))
+def extract_text_docx(data: bytes) -> list[dict]:
+    """Extract text from DOCX bytes. Returns a single-element list (no page tracking in DOCX)."""
+    doc = Document(io.BytesIO(data))
     paragraphs = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
     text = "\n\n".join(paragraphs)
     if not text:
