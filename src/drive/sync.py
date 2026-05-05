@@ -1,5 +1,6 @@
 import gc
 import io
+import logging
 from typing import Any
 
 from googleapiclient.discovery import build
@@ -11,6 +12,7 @@ from src.ingestion.extractor import extract_text_pdf, extract_text_docx
 from src.ingestion.chunker import chunk_pages
 from src.store.vector_store import upsert_chunks, delete_by_file_id, list_indexed_files
 
+logger = logging.getLogger(__name__)
 
 SUPPORTED_MIME_TYPES = {
     "application/pdf": ".pdf",
@@ -20,9 +22,11 @@ SUPPORTED_MIME_TYPES = {
 
 def sync_drive() -> dict[str, Any]:
     """Sync Drive folder to the vector store. Returns a summary dict."""
+    logger.info("sync_drive: starting")
     service = _build_drive_service()
     indexed = list_indexed_files()
     drive_files = _list_drive_files(service)
+    logger.info("sync_drive: found %d drive files, %d already indexed", len(drive_files), len(indexed))
 
     added, updated, skipped, removed = 0, 0, 0, 0
     drive_file_ids = {f["id"] for f in drive_files}
@@ -49,29 +53,40 @@ def sync_drive() -> dict[str, Any]:
         else:
             added += 1
 
+        logger.info("sync_drive: processing '%s'", file_name)
         data = _download_file(service, file_id, mime_type)
         pages = _extract(data, mime_type)
         del data
-        chunks = chunk_pages(
-            pages,
-            file_id=file_id,
-            file_name=file_name,
-            max_tokens=settings.chunk_max_tokens,
-            overlap_paragraphs=settings.chunk_overlap_paragraphs,
-        )
-        del pages
-        for chunk in chunks:
-            chunk["modified_time"] = modified_time
-        upsert_chunks(chunks)
-        del chunks
         gc.collect()
 
+        # Process one page at a time to keep peak memory low on free-tier hosting.
+        # chunk_pages already resets per page (no cross-page state), so streaming is safe.
+        logger.info("sync_drive: '%s' — %d pages, embedding page by page", file_name, len(pages))
+        for page in pages:
+            chunks = chunk_pages(
+                [page],
+                file_id=file_id,
+                file_name=file_name,
+                max_tokens=settings.chunk_max_tokens,
+                overlap_paragraphs=settings.chunk_overlap_paragraphs,
+            )
+            for chunk in chunks:
+                chunk["modified_time"] = modified_time
+            upsert_chunks(chunks)
+            del chunks
+        del pages
+        gc.collect()
+        logger.info("sync_drive: '%s' done", file_name)
+
+    logger.info("sync_drive: complete — added=%d updated=%d skipped=%d removed=%d", added, updated, skipped, removed)
     return {"added": added, "updated": updated, "skipped": skipped, "removed": removed, "total": len(drive_files)}
 
 
 def _build_drive_service():
     creds = get_credentials()
-    return build("drive", "v3", credentials=creds)
+    # cache_discovery=False skips fetching/caching the API discovery document,
+    # which can spike 50-100 MB on a cold start on memory-constrained hosts.
+    return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
 def _list_drive_files(service) -> list[dict]:
