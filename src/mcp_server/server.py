@@ -20,7 +20,7 @@ from starlette.routing import Mount, Route
 from config.settings import settings
 from src.drive.sync import sync_drive
 from src.mcp_server.oauth import SimpleOAuthProvider
-from src.store.vector_store import list_papers, query_chunks
+from src.store.vector_store import list_papers, query_chunks, warmup
 
 
 app = Server("rag-reference-server")
@@ -101,6 +101,7 @@ def build_starlette_app(server_url: str) -> Starlette:
 
     @contextlib.asynccontextmanager
     async def lifespan(_app):
+        warmup()
         async with session_manager.run():
             yield
 

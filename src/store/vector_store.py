@@ -18,7 +18,7 @@ from config.settings import settings
 
 COLLECTION_NAME = "references"
 VECTOR_SIZE = 384
-UPSERT_BATCH_SIZE = 32
+UPSERT_BATCH_SIZE = 16
 SCROLL_BATCH_SIZE = 500
 
 _client: QdrantClient | None = None
@@ -60,12 +60,20 @@ def _get_embedder(
     if embedder is not None:
         return embedder
     if _model is None:
-        _model = TextEmbedding(settings.embed_model)
+        # threads=1 prevents ONNX Runtime from spawning a thread pool sized to
+        # the host CPU count (cloud containers often report 32-64 CPUs), which
+        # would waste 100-200 MB on thread stacks alone.
+        _model = TextEmbedding(settings.embed_model, threads=1)
 
     def _encode(texts: list[str]) -> list[list[float]]:
         return [emb.tolist() for emb in _model.embed(texts)]
 
     return _encode
+
+
+def warmup() -> None:
+    """Eagerly load the embedding model so it's in memory before the first request."""
+    _get_embedder()
 
 
 def upsert_chunks(
