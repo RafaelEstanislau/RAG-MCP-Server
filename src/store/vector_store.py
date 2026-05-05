@@ -18,6 +18,8 @@ from config.settings import settings
 
 COLLECTION_NAME = "references"
 VECTOR_SIZE = 384
+UPSERT_BATCH_SIZE = 32
+SCROLL_BATCH_SIZE = 500
 
 _client: QdrantClient | None = None
 _model: TextEmbedding | None = None
@@ -71,35 +73,40 @@ def upsert_chunks(
     client: QdrantClient | None = None,
     embedder: Callable[[list[str]], list[list[float]]] | None = None,
 ) -> list[str]:
-    """Embed and upsert chunks into the collection. Returns list of inserted chunk IDs."""
+    """Embed and upsert chunks into the collection in batches. Returns list of inserted chunk IDs."""
     if not chunks:
         return []
 
     qdrant = _get_client(client)
     encode = _get_embedder(embedder)
+    inserted_ids: list[str] = []
 
-    texts = [c["text"] for c in chunks]
-    embeddings = encode(texts)
+    for batch_start in range(0, len(chunks), UPSERT_BATCH_SIZE):
+        batch = chunks[batch_start : batch_start + UPSERT_BATCH_SIZE]
+        texts = [c["text"] for c in batch]
+        embeddings = encode(texts)
 
-    points = [
-        PointStruct(
-            id=_chunk_id_to_uuid(c["chunk_id"]),
-            vector=embeddings[i],
-            payload={
-                "chunk_id": c["chunk_id"],
-                "file_id": c["file_id"],
-                "file_name": c["file_name"],
-                "page_number": c["page_number"],
-                "chunk_index": c["chunk_index"],
-                "modified_time": c.get("modified_time", ""),
-                "text": c["text"],
-            },
-        )
-        for i, c in enumerate(chunks)
-    ]
+        points = [
+            PointStruct(
+                id=_chunk_id_to_uuid(c["chunk_id"]),
+                vector=embeddings[i],
+                payload={
+                    "chunk_id": c["chunk_id"],
+                    "file_id": c["file_id"],
+                    "file_name": c["file_name"],
+                    "page_number": c["page_number"],
+                    "chunk_index": c["chunk_index"],
+                    "modified_time": c.get("modified_time", ""),
+                    "text": c["text"],
+                },
+            )
+            for i, c in enumerate(batch)
+        ]
 
-    qdrant.upsert(collection_name=COLLECTION_NAME, points=points)
-    return [c["chunk_id"] for c in chunks]
+        qdrant.upsert(collection_name=COLLECTION_NAME, points=points)
+        inserted_ids.extend(c["chunk_id"] for c in batch)
+
+    return inserted_ids
 
 
 def query_chunks(
@@ -152,23 +159,29 @@ def list_papers(
 ) -> list[dict]:
     """Return unique paper metadata (file_id, file_name, chunk count)."""
     qdrant = _get_client(client)
-    points, _ = qdrant.scroll(
-        collection_name=COLLECTION_NAME,
-        limit=10000,
-        with_payload=True,
-        with_vectors=False,
-    )
-
     seen: dict[str, dict] = {}
-    for point in points:
-        fid = point.payload["file_id"]
-        if fid not in seen:
-            seen[fid] = {
-                "file_id": fid,
-                "file_name": point.payload["file_name"],
-                "chunk_count": 0,
-            }
-        seen[fid]["chunk_count"] += 1
+    offset = None
+
+    while True:
+        points, next_offset = qdrant.scroll(
+            collection_name=COLLECTION_NAME,
+            limit=SCROLL_BATCH_SIZE,
+            offset=offset,
+            with_payload=["file_id", "file_name"],
+            with_vectors=False,
+        )
+        for point in points:
+            fid = point.payload["file_id"]
+            if fid not in seen:
+                seen[fid] = {
+                    "file_id": fid,
+                    "file_name": point.payload["file_name"],
+                    "chunk_count": 0,
+                }
+            seen[fid]["chunk_count"] += 1
+        if next_offset is None:
+            break
+        offset = next_offset
 
     return list(seen.values())
 
@@ -178,17 +191,23 @@ def list_indexed_files(
 ) -> dict[str, str]:
     """Return {file_id: modified_time} for all indexed files."""
     qdrant = _get_client(client)
-    points, _ = qdrant.scroll(
-        collection_name=COLLECTION_NAME,
-        limit=10000,
-        with_payload=True,
-        with_vectors=False,
-    )
-
     result: dict[str, str] = {}
-    for point in points:
-        fid = point.payload["file_id"]
-        if fid not in result:
-            result[fid] = point.payload.get("modified_time", "")
+    offset = None
+
+    while True:
+        points, next_offset = qdrant.scroll(
+            collection_name=COLLECTION_NAME,
+            limit=SCROLL_BATCH_SIZE,
+            offset=offset,
+            with_payload=["file_id", "modified_time"],
+            with_vectors=False,
+        )
+        for point in points:
+            fid = point.payload["file_id"]
+            if fid not in result:
+                result[fid] = point.payload.get("modified_time", "")
+        if next_offset is None:
+            break
+        offset = next_offset
 
     return result

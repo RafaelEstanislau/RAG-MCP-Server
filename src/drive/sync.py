@@ -1,3 +1,4 @@
+import gc
 import io
 from typing import Any
 
@@ -50,6 +51,7 @@ def sync_drive() -> dict[str, Any]:
 
         data = _download_file(service, file_id, mime_type)
         pages = _extract(data, mime_type)
+        del data
         chunks = chunk_pages(
             pages,
             file_id=file_id,
@@ -57,9 +59,12 @@ def sync_drive() -> dict[str, Any]:
             max_tokens=settings.chunk_max_tokens,
             overlap_paragraphs=settings.chunk_overlap_paragraphs,
         )
+        del pages
         for chunk in chunks:
             chunk["modified_time"] = modified_time
         upsert_chunks(chunks)
+        del chunks
+        gc.collect()
 
     return {"added": added, "updated": updated, "skipped": skipped, "removed": removed, "total": len(drive_files)}
 

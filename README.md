@@ -12,7 +12,7 @@ A personal semantic search engine over your Google Drive reference library, expo
 | **Large libraries** | Hits token limits fast with 10+ papers | Scales to hundreds of documents — only top-K chunks are returned |
 | **Search quality** | Keyword/filename match | Semantic similarity — finds relevant content even without exact keywords |
 | **PDF handling** | Full text dump | Per-page extraction with page number metadata |
-| **Re-reads files** | Every conversation | Index is persisted in ChromaDB — no re-download needed |
+| **Re-reads files** | Every conversation | Index is persisted in Qdrant Cloud — no re-download needed |
 | **Citation support** | No | Returns paper title + page number with every chunk |
 | **Context efficiency** | Entire documents in context | Only the most relevant passages, keeping the window clean |
 
@@ -26,13 +26,13 @@ The core idea: instead of giving Claude the whole library, you give it a tool to
 Google Drive (PDFs / DOCX)
         │
         ▼
-   src/drive/          ← OAuth 2.0 auth + file sync
+   src/drive/          ← Service Account auth + file sync
         │
         ▼
    src/ingestion/      ← text extraction (PyMuPDF / python-docx) + chunking
         │
         ▼
-   src/store/          ← sentence-transformers embeddings → ChromaDB
+   src/store/          ← fastembed embeddings → Qdrant Cloud
         │
         ▼
    src/mcp_server/     ← MCP tools over Streamable HTTP + OAuth 2.0
@@ -45,10 +45,11 @@ Google Drive (PDFs / DOCX)
 
 ## Prerequisites
 
-- Python 3.11+
-- A Google Cloud project with the Drive API enabled
-- A Google Drive folder containing your PDF/DOCX papers
-- A public HTTPS URL for your server (ngrok works for local dev)
+- Python 3.11–3.13 (3.14 not supported — fastembed has no wheels for it yet)
+- A Google Cloud project with the Drive API enabled and a **Service Account**
+- A Google Drive folder shared with that service account
+- A [Qdrant Cloud](https://cloud.qdrant.io/) cluster (free tier works)
+- A public HTTPS URL for your server (Render free tier or ngrok for local dev)
 
 ---
 
@@ -58,92 +59,101 @@ Google Drive (PDFs / DOCX)
 
 ```bash
 git clone <repo-url>
-cd RAG
+cd RAG-MCP-Server
 pip install -e ".[dev]"
 ```
 
-### 2. Google Cloud — create credentials
+### 2. Qdrant Cloud — create a cluster
+
+1. Sign up at [cloud.qdrant.io](https://cloud.qdrant.io/)
+2. Create a free cluster
+3. Copy the **Cluster URL** and generate an **API key** from the dashboard
+
+### 3. Google Cloud — create a Service Account
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project (or select an existing one)
-3. Enable the **Google Drive API**: APIs & Services → Enable APIs → search "Drive API"
-4. Create OAuth credentials: APIs & Services → Credentials → Create Credentials → **OAuth client ID**
-   - Application type: **Desktop app**
-   - Download the JSON file
-5. Save it as `credentials/client_secret.json` in this project root
+2. Create or select a project and enable the **Google Drive API**
+3. Go to **IAM & Admin → Service Accounts → Create Service Account**
+4. Grant it no special roles (Drive access is controlled by folder sharing)
+5. Open the service account → **Keys → Add Key → JSON** — download the file
+6. Copy the entire JSON file contents — you'll paste it as an env var below
 
-### 3. Get your Drive folder ID
+### 4. Share your Drive folder with the service account
 
-Open the Google Drive folder you want to index in your browser. The URL looks like:
+Open the Google Drive folder you want to index, click **Share**, and add the service account email (looks like `name@project.iam.gserviceaccount.com`) with **Viewer** access.
+
+Get the folder ID from the URL:
 
 ```
 https://drive.google.com/drive/folders/1A2B3C4D5E6F7G8H9I0J
+                                        ^^^^^^^^^^^^^^^^^^^^
+                                        this is your folder ID
 ```
 
-The long string at the end (`1A2B3C4D5E6F7G8H9I0J`) is your folder ID.
-
-### 4. Configure environment variables
+### 5. Configure environment variables
 
 Create a `.env` file in the project root:
 
 ```env
 DRIVE_FOLDER_ID=your_folder_id_here
+QDRANT_URL=https://your-cluster.qdrant.io
+QDRANT_API_KEY=your_qdrant_api_key
+GOOGLE_SERVICE_ACCOUNT_KEY={"type":"service_account","project_id":"..."}
 MCP_SERVER_URL=https://your-public-url.example.com
 ```
 
-`MCP_SERVER_URL` must be the public HTTPS URL that Claude.ai will use to reach your server (see step 6).
+`GOOGLE_SERVICE_ACCOUNT_KEY` is the full contents of the downloaded JSON key, on a single line.
 
 Optional variables (with defaults):
 
 ```env
 MCP_HOST=0.0.0.0
 MCP_PORT=8000
-EMBED_MODEL=all-MiniLM-L6-v2
+EMBED_MODEL=BAAI/bge-small-en-v1.5
 CHUNK_MAX_TOKENS=400
 CHUNK_OVERLAP_PARAGRAPHS=1
 ```
 
-### 5. First run — authorize Google Drive access
+> **Memory tip (free-tier hosting):** If you hit the 512 MB limit during sync, lower `CHUNK_MAX_TOKENS` to `200`. Smaller chunks mean fewer vectors in memory per embedding batch.
 
-Run the server once to trigger the Drive OAuth flow:
+### 6. Run the server
 
 ```bash
 python -m src.mcp_server.server
 ```
 
-A browser window will open asking you to authorize access to your Drive. After approving, the token is saved to `credentials/token.json` and reused on future runs.
+No browser OAuth flow is needed — the service account authenticates automatically.
 
-### 6. Expose the server publicly (ngrok)
+### 7. Expose the server publicly
 
-Claude.ai is a remote client — it needs to reach your server over the internet via HTTPS.
+**Option A — deploy to Render (recommended)**
+
+1. Push the repo to GitHub
+2. Create a new **Web Service** on [render.com](https://render.com), connected to your repo
+3. Set the build command: `pip install -e .`
+4. Set the start command: `python -m src.mcp_server.server`
+5. Add all env vars from step 5 in the Render dashboard
+6. Render provides a stable `https://your-service.onrender.com` URL — use that as `MCP_SERVER_URL`
+
+**Option B — ngrok for local dev**
 
 ```bash
 # in a separate terminal
 ngrok http 8000
 ```
 
-Copy the `https://` URL ngrok gives you (e.g. `https://abc123.ngrok-free.app`) and update your `.env`:
+Copy the `https://` URL and set it as `MCP_SERVER_URL`, then restart the server.
 
-```env
-MCP_SERVER_URL=https://abc123.ngrok-free.app
-```
+> Free ngrok URLs change on every restart — update `MCP_SERVER_URL` and restart each time.
 
-Then restart the server:
+### 8. Connect Claude.ai
 
-```bash
-python -m src.mcp_server.server
-```
-
-> **Note:** Free ngrok URLs change on every restart. Update `MCP_SERVER_URL` and restart the server each time. A paid ngrok plan gives you a stable domain.
-
-### 7. Connect Claude.ai
-
-1. Go to [claude.ai](https://claude.ai) → Settings → Integrations (or the MCP section)
-2. Add a new MCP server with the URL from step 6
-3. Claude.ai will open a browser popup to complete the OAuth flow — approve it
+1. Go to [claude.ai](https://claude.ai) → Settings → Integrations
+2. Add a new MCP server with your public URL
+3. Complete the OAuth popup that appears
 4. The server is now connected
 
-### 8. Initial sync
+### 9. Initial sync
 
 In a Claude.ai conversation:
 
@@ -178,25 +188,18 @@ Sync my Drive folder, then find papers about retrieval-augmented generation and 
 ## Project structure
 
 ```
-RAG/
+RAG-MCP-Server/
 ├── config/
 │   └── settings.py          # All configuration via env vars
-├── credentials/
-│   ├── client_secret.json   # Google OAuth app credentials (git-ignored)
-│   └── token.json           # Drive access token (git-ignored)
-├── data/
-│   ├── chroma/              # Vector store (git-ignored)
-│   ├── downloads/           # Downloaded papers (git-ignored)
-│   └── sync_state.json      # Tracks synced files (git-ignored)
 ├── src/
 │   ├── drive/
-│   │   ├── auth.py          # Google Drive OAuth 2.0
+│   │   ├── auth.py          # Google Service Account authentication
 │   │   └── sync.py          # File download and sync logic
 │   ├── ingestion/
 │   │   ├── extractor.py     # PDF (per-page) and DOCX text extraction
 │   │   └── chunker.py       # Token-aware chunking with overlap
 │   ├── store/
-│   │   └── vector_store.py  # Embedding + ChromaDB storage and query
+│   │   └── vector_store.py  # fastembed embeddings + Qdrant storage and query
 │   └── mcp_server/
 │       ├── oauth.py         # In-memory OAuth 2.0 provider (auto-approves)
 │       └── server.py        # MCP tools + Streamable HTTP transport
